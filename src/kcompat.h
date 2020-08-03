@@ -171,6 +171,9 @@ struct msix_entry {
 #define uninitialized_var(x) x = x
 #endif
 
+struct vfd_objects *create_vfd_sysfs(struct pci_dev *pdev, int num_alloc_vfs);
+void destroy_vfd_sysfs(struct pci_dev *pdev, struct vfd_objects *vfd_obj);
+
 #ifndef PCIE_LINK_STATE_L0S
 #define PCIE_LINK_STATE_L0S 1
 #endif

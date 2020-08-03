@@ -257,6 +257,7 @@ struct vf_data_storage {
 	struct vf_stats saved_rst_vfstats;
 	bool pf_set_mac;
 	u16 pf_vlan; /* When set, guest VLAN config not allowed. */
+    DECLARE_BITMAP(trunk_vlans, VLAN_N_VID);
 	u16 pf_qos;
 	u16 tx_rate;
 	u8 spoofchk_enabled;
@@ -504,6 +505,14 @@ struct ixgbe_ring_feature {
 #define IXGBE_82599_VMDQ_8Q_MASK 0x78
 #define IXGBE_82599_VMDQ_4Q_MASK 0x7C
 #define IXGBE_82599_VMDQ_2Q_MASK 0x7E
+
+struct vfd_ops {
+    int (*get_trunk)(struct pci_dev *pdev, int vf_id, unsigned long *buff);
+    int (*set_trunk)(struct pci_dev *pdev, int vf_id,
+             const unsigned long *buff);
+};
+
+extern const struct vfd_ops *vfd_ops;
 
 #ifndef CONFIG_IXGBE_DISABLE_PACKET_SPLIT
 /*
@@ -780,6 +789,18 @@ struct ixgbe_therm_proc_data {
 /* default to trying for four seconds */
 #define IXGBE_TRY_LINK_TIMEOUT	(4 * HZ)
 #define IXGBE_SFP_POLL_JIFFIES	(2 * HZ)	/* SFP poll every 2 seconds */
+
+/**
+ * struct vfd_objects - VF-d kobjects information struct
+ * @num_vfs:    number of VFs allocated
+ * @sriov_kobj: pointer to the top sriov kobject
+ * @vf_kobj:    array of pointer to each VF's kobjects
+ */
+struct vfd_objects {
+    int num_vfs;
+    struct kobject *sriov_kobj;
+    struct kobject *vf_kobj[0];
+};
 
 /* board specific private data structure */
 struct ixgbe_adapter {
@@ -1079,6 +1100,7 @@ struct ixgbe_adapter {
 	u16 num_xsk_umems_used;
 	u16 num_xsk_umems;
 #endif
+    struct vfd_objects *vfd;
 };
 
 static inline u8 ixgbe_max_rss_indices(struct ixgbe_adapter *adapter)

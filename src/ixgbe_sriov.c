@@ -17,6 +17,8 @@
 #include "ixgbe_type.h"
 #include "ixgbe_sriov.h"
 
+const struct vfd_ops ixgbe_vfd_ops;
+
 #ifdef CONFIG_PCI_IOV
 static inline void ixgbe_alloc_vf_macvlans(struct ixgbe_adapter *adapter,
 					   unsigned int num_vfs)
@@ -122,7 +124,7 @@ static int __ixgbe_enable_sriov(struct ixgbe_adapter *adapter,
 		 * we want to disable the querying by default.
 		 */
 		adapter->vfinfo[i].rss_query_enabled = 0;
-
+        vfd_ops = &ixgbe_vfd_ops;
 #endif
 		/* Untrust all VFs */
 		adapter->vfinfo[i].trusted = false;
@@ -209,6 +211,11 @@ void ixgbe_enable_sriov(struct ixgbe_adapter *adapter)
 			e_err(probe, "Failed to enable PCI sriov: %d\n", err);
 			return;
 		}
+        adapter->vfd = create_vfd_sysfs(adapter->pdev, num_vfs);
+        if (!adapter->vfd) {
+            e_err(probe, "Unable to create sysfs entries for VF");
+            return;
+        }
 	}
 
 	if (!__ixgbe_enable_sriov(adapter, num_vfs)) {
@@ -251,6 +258,12 @@ int ixgbe_disable_sriov(struct ixgbe_adapter *adapter)
 	/* free macvlan list */
 	kfree(adapter->mv_list);
 	adapter->mv_list = NULL;
+
+    /* destroy sysfs entries */
+    if(adapter->vfd) {
+        destroy_vfd_sysfs(adapter->pdev, adapter->vfd);
+        adapter->vfd = NULL;
+    }
 
 	/* if SR-IOV is already disabled then there is nothing to do */
 	if (!(adapter->flags & IXGBE_FLAG_SRIOV_ENABLED))
@@ -356,6 +369,12 @@ static int ixgbe_pci_sriov_enable(struct pci_dev __maybe_unused *dev, int __mayb
 	err = __ixgbe_enable_sriov(adapter, num_vfs);
 	if (err)
 		goto err_out;
+
+    adapter->vfd = create_vfd_sysfs(adapter->pdev, num_vfs);
+    if (!adapter->vfd) {
+        e_err(probe, "Unable to create sysfs entries for VF");
+		goto err_out;
+    }
 
 	for (i = 0; i < adapter->num_vfs; i++)
 		ixgbe_vf_configuration(dev, (i | 0x10000000));
@@ -495,6 +514,11 @@ int ixgbe_set_vf_vlan(struct ixgbe_adapter *adapter, int add, int vid, u32 vf)
 #endif
 
 	err = hw->mac.ops.set_vfta(hw, vid, vf, !!add, false);
+    if (add) {
+        set_bit(vid, adapter->vfinfo[vf].trunk_vlans);
+    } else {
+        clear_bit(vid, adapter->vfinfo[vf].trunk_vlans);
+    }
 #ifndef HAVE_VLAN_RX_REGISTER
 
 	if (add && !err)
@@ -747,12 +771,18 @@ static inline void ixgbe_vf_reset_event(struct ixgbe_adapter *adapter, u32 vf)
 	u32 reg_val;
 	u32 queue;
 	u32 word;
+    u16 vid;
 
 	/* remove VLAN filters belonging to this VF */
 	ixgbe_clear_vf_vlans(adapter, vf);
 
 	/* add back PF assigned VLAN or VLAN 0 */
 	ixgbe_set_vf_vlan(adapter, true, vfinfo->pf_vlan, vf);
+
+    for_each_set_bit(vid, vfinfo->trunk_vlans, VLAN_N_VID) {
+        ixgbe_set_vf_vlan(adapter, true, vid, vf);
+    }
+    
 
 	/* reset offloads to defaults */
 	ixgbe_set_vmolr(hw, vf, !vfinfo->pf_vlan);
@@ -777,6 +807,7 @@ static inline void ixgbe_vf_reset_event(struct ixgbe_adapter *adapter, u32 vf)
 
 	ixgbe_del_mac_filter(adapter, adapter->vfinfo[vf].vf_mac_addresses, vf);
 	ixgbe_set_vf_macvlan(adapter, vf, 0, NULL);
+
 
 	/* reset VF api back to unknown */
 	adapter->vfinfo[vf].vf_api = ixgbe_mbox_api_10;
@@ -1897,3 +1928,104 @@ int ixgbe_ndo_get_vf_config(struct net_device *netdev,
 }
 #endif /* IFLA_VF_MAX */
 
+
+/**
+ * ixgbe_get_trunk - Gets the configured VLAN filters
+ * @pdev: PCI device information struct
+ * @vf_id: VF identifier
+ * @trunk_vlans: trunk vlans
+ *
+ * Gets the active trunk vlans
+ *
+ * Returns the number of active vlans filters on success,
+ * negative on failure
+ **/
+static int ixgbe_get_trunk(struct pci_dev *pdev, int vf_id,
+              unsigned long *trunk_vlans)
+{
+    int ret = 0;
+    struct ixgbe_adapter *adapter = pci_get_drvdata(pdev);
+    struct vf_data_storage *vf = &adapter->vfinfo[vf_id];
+
+    memset(trunk_vlans, 0,
+           BITS_TO_LONGS(VLAN_N_VID) * sizeof(long));
+
+    bitmap_copy(trunk_vlans, vf->trunk_vlans, VLAN_N_VID);
+    if(vf->pf_vlan) {
+        set_bit(vf->pf_vlan, trunk_vlans);
+    }
+
+    ret = bitmap_weight(trunk_vlans, VLAN_N_VID);
+    return ret;
+}
+
+
+/**
+ * ixgbe_set_trunk - Configure VLAN filters
+ * @pdev: PCI device information struct
+ * @vf_id: VF identifier
+ * @vlan_bitmap: vlans to filter on
+ *
+ * Applies the VLAN filters
+ *
+ * Returns 0 on success, negative on failure
+ **/
+static int ixgbe_set_trunk(struct pci_dev *pdev, int vf_id,
+              const unsigned long *vlan_bitmap)
+{
+    u16 vid;
+    int err = 0;
+    struct ixgbe_adapter *adapter = pci_get_drvdata(pdev);
+    struct vf_data_storage *vf = &adapter->vfinfo[vf_id];
+    struct ixgbe_hw *hw = &adapter->hw;
+    u8 num_tcs = netdev_get_num_tc(adapter->netdev);
+
+    ixgbe_clear_vf_vlans(adapter, vf_id);
+	/* add back PF assigned VLAN or VLAN 0 */
+	ixgbe_set_vf_vlan(adapter, true, vf->pf_vlan, vf_id);
+
+	/* reset offloads to defaults */
+	ixgbe_set_vmolr(hw, vf_id, !vf->pf_vlan);
+
+	/* set outgoing tags for VFs */
+	if (!vf->pf_vlan && !vf->pf_qos && !num_tcs) {
+		ixgbe_clear_vmvir(adapter, vf_id);
+	} else {
+		if (vf->pf_qos || !num_tcs)
+			ixgbe_set_vmvir(adapter, vf->pf_vlan,
+					vf->pf_qos, vf_id);
+		else
+			ixgbe_set_vmvir(adapter, vf->pf_vlan,
+					adapter->default_up, vf_id);
+	}
+	/* disable hide VLAN on X550 */
+	if (hw->mac.type >= ixgbe_mac_X550)
+		ixgbe_write_qde(adapter, vf_id, IXGBE_QDE_ENABLE);
+
+    /* Add vlans */
+    for_each_set_bit(vid, vlan_bitmap, VLAN_N_VID) {
+        err = ixgbe_set_vf_vlan(adapter, true, vid, vf_id);
+        if (err)
+            goto out;
+#ifdef HAVE_VLAN_RX_REGISTER
+        err = ixgbe_set_vf_vlan(adapter, true, vid, VMDQ_P(0));
+        if (err)
+            goto out;
+#endif
+    }
+
+    bitmap_copy(vf->trunk_vlans, vlan_bitmap, VLAN_N_VID);
+
+    /* if trunk mode is enabled, disable vlan stripping */
+    if(bitmap_weight(vlan_bitmap, VLAN_N_VID) > 1) {
+        hw->mac.ops.set_vlan_anti_spoofing(hw, false, vf_id);
+    }
+out:
+    return err;
+}
+
+
+const struct vfd_ops ixgbe_vfd_ops = {
+    .get_trunk      = ixgbe_get_trunk,
+    .set_trunk      = ixgbe_set_trunk,
+};
