@@ -534,7 +534,8 @@ int ixgbe_set_vf_vlan(struct ixgbe_adapter *adapter, int add, int vid, u32 vf)
 #endif
 
 	return err;
-}
+} 
+
 static int ixgbe_set_vf_lpe(struct ixgbe_adapter *adapter, u32 max_frame, u32 vf)
 {
 	struct ixgbe_hw *hw = &adapter->hw;
@@ -1959,7 +1960,6 @@ static int ixgbe_get_trunk(struct pci_dev *pdev, int vf_id,
     return ret;
 }
 
-
 /**
  * ixgbe_set_trunk - Configure VLAN filters
  * @pdev: PCI device information struct
@@ -1981,51 +1981,130 @@ static int ixgbe_set_trunk(struct pci_dev *pdev, int vf_id,
     u8 num_tcs = netdev_get_num_tc(adapter->netdev);
 
     ixgbe_clear_vf_vlans(adapter, vf_id);
+
 	/* add back PF assigned VLAN or VLAN 0 */
-	ixgbe_set_vf_vlan(adapter, true, vf->pf_vlan, vf_id);
-
-	/* reset offloads to defaults */
-	ixgbe_set_vmolr(hw, vf_id, !vf->pf_vlan);
-
-	/* set outgoing tags for VFs */
-	if (!vf->pf_vlan && !vf->pf_qos && !num_tcs) {
-		ixgbe_clear_vmvir(adapter, vf_id);
-	} else {
-		if (vf->pf_qos || !num_tcs)
-			ixgbe_set_vmvir(adapter, vf->pf_vlan,
-					vf->pf_qos, vf_id);
-		else
-			ixgbe_set_vmvir(adapter, vf->pf_vlan,
-					adapter->default_up, vf_id);
-	}
-	/* disable hide VLAN on X550 */
-	if (hw->mac.type >= ixgbe_mac_X550)
-		ixgbe_write_qde(adapter, vf_id, IXGBE_QDE_ENABLE);
+    if (vf->pf_vlan) {
+        err = ixgbe_enable_port_vlan(adapter, vf_id, vf->pf_vlan, vf->pf_qos);
+        if (err)
+            goto out;
+    } else {
+        err = ixgbe_disable_port_vlan(adapter, vf_id);
+        if (err)
+            goto out;
+    }
 
     /* Add vlans */
     for_each_set_bit(vid, vlan_bitmap, VLAN_N_VID) {
-        err = ixgbe_set_vf_vlan(adapter, true, vid, vf_id);
-        if (err)
-            goto out;
-#ifdef HAVE_VLAN_RX_REGISTER
-        err = ixgbe_set_vf_vlan(adapter, true, vid, VMDQ_P(0));
-        if (err)
-            goto out;
-#endif
+        if (vid == 0) {
+            continue;
+        }
+    	err = ixgbe_set_vf_vlan(adapter, true, vid, vf_id);
+    
+    	if (err)
+    		return err;
+    
+    	/* in case of promiscuous mode any VLAN filter set for a VF must
+    	 * also have the PF pool added to it.
+    	 */
+    	if (adapter->netdev->flags & IFF_PROMISC) {
+    		err = ixgbe_set_vf_vlan(adapter, true, vid, VMDQ_P(0));
+    		if (err)
+    			return err;
+    	}
+            
     }
+	if (hw->mac.type >= ixgbe_mac_X550)
+		ixgbe_write_qde(adapter, vf_id, IXGBE_QDE_ENABLE);
 
     bitmap_copy(vf->trunk_vlans, vlan_bitmap, VLAN_N_VID);
 
-    /* if trunk mode is enabled, disable vlan stripping */
-    if(bitmap_weight(vlan_bitmap, VLAN_N_VID) > 1) {
-        hw->mac.ops.set_vlan_anti_spoofing(hw, false, vf_id);
-    }
 out:
     return err;
 }
 
 
+static int ixgbe_get_vlan_strip(struct pci_dev *pdev, int vf_id, bool *enable)
+{
+    struct ixgbe_adapter *adapter = pci_get_drvdata(pdev);
+    struct vf_data_storage *vf = &adapter->vfinfo[vf_id];
+    struct ixgbe_hw *hw = &adapter->hw;
+    u32 vlnctrl = 0;
+    int i;
+
+    *enable = !!(IXGBE_READ_REG(hw, IXGBE_QDE) & ~IXGBE_QDE_HIDE_VLAN)
+    return 0;
+}
+
+static int ixgbe_set_vlan_strip(struct pci_dev *pdev, int vf_id,
+    const bool enable)
+{
+    struct ixgbe_adapter *adapter = pci_get_drvdata(pdev);
+
+	u32 reg = IXGBE_QDE_ENABLE;
+	if (enable)
+		reg |= IXGBE_QDE_HIDE_VLAN;
+
+	ixgbe_write_qde(adapter, vf_id, reg);
+    return 0;
+}
+
+
+static int ixgbe_get_vlan_promisc(struct pci_dev *pdev, int vf_id,
+    bool *enable)
+{
+    struct ixgbe_adapter *adapter = pci_get_drvdata(pdev);
+    *enable = !!(adapter->flags2 & IXGBE_FLAG2_VLAN_PROMISC);
+
+    return 0;
+}
+
+void ixgbe_vlan_promisc_disable(struct ixgbe_adapter *adapter);
+
+static int ixgbe_set_vlan_promisc(struct pci_dev *pdev, int vf_id, const bool enable)
+{
+    struct ixgbe_adapter *adapter = pci_get_drvdata(pdev);
+	struct ixgbe_hw *hw = &adapter->hw;
+	u32 vlnctrl, i;
+
+    if (enable) {
+    	vlnctrl = IXGBE_READ_REG(hw, IXGBE_VLNCTRL);
+    
+    	/* Nothing to do for 82598 */
+    	if (hw->mac.type == ixgbe_mac_82598EB)
+    		return 0;
+    
+    	/* We are already in VLAN promisc, nothing to do */
+    	if (adapter->flags2 & IXGBE_FLAG2_VLAN_PROMISC)
+    		return 0;
+    
+    	/* Set flag so we don't redo unnecessary work */
+    	adapter->flags2 |= IXGBE_FLAG2_VLAN_PROMISC;
+    
+    	/* Add PF to all active pools */
+    	for (i = IXGBE_VLVF_ENTRIES; --i;) {
+    		u32 reg_offset = IXGBE_VLVFB(i * 2 + VMDQ_P(0) / 32);
+    		u32 vlvfb = IXGBE_READ_REG(hw, reg_offset);
+    
+    		vlvfb |= 1 << (VMDQ_P(0) % 32);
+    		IXGBE_WRITE_REG(hw, reg_offset, vlvfb);
+    	}
+    
+    	/* Set all bits in the VLAN filter table array */
+    	for (i = hw->mac.vft_size; i--;)
+    		IXGBE_WRITE_REG(hw, IXGBE_VFTA(i), ~0U);
+    } else {
+        ixgbe_vlan_promisc_disable(adapter);
+    }
+    return 0;
+}
+
+
+
 const struct vfd_ops ixgbe_vfd_ops = {
     .get_trunk      = ixgbe_get_trunk,
     .set_trunk      = ixgbe_set_trunk,
+    .get_vlan_promisc = ixgbe_get_vlan_promisc,
+    .set_vlan_promisc = ixgbe_set_vlan_promisc,
+    .get_vlan_strip = ixgbe_get_vlan_strip,
+    .set_vlan_strip = ixgbe_set_vlan_strip,
 };

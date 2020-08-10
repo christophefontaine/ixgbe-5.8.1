@@ -4744,13 +4744,13 @@ static void ixgbe_configure_rx(struct ixgbe_adapter *adapter)
 #if defined(NETIF_F_HW_VLAN_TX) || defined(NETIF_F_HW_VLAN_CTAG_TX)
 #ifdef HAVE_INT_NDO_VLAN_RX_ADD_VID
 #ifdef NETIF_F_HW_VLAN_CTAG_TX
-static int ixgbe_vlan_rx_add_vid(struct net_device *netdev,
+int ixgbe_vlan_rx_add_vid(struct net_device *netdev,
 				 __always_unused __be16 proto, u16 vid)
 #else /* !NETIF_F_HW_VLAN_CTAG_TX */
-static int ixgbe_vlan_rx_add_vid(struct net_device *netdev, u16 vid)
+int ixgbe_vlan_rx_add_vid(struct net_device *netdev, u16 vid)
 #endif /* NETIF_F_HW_VLAN_CTAG_TX */
 #else /* !HAVE_INT_NDO_VLAN_RX_ADD_VID */
-static void ixgbe_vlan_rx_add_vid(struct net_device *netdev, u16 vid)
+void ixgbe_vlan_rx_add_vid(struct net_device *netdev, u16 vid)
 #endif /* HAVE_INT_NDO_VLAN_RX_ADD_VID */
 {
 	struct ixgbe_adapter *adapter = netdev_priv(netdev);
@@ -5074,7 +5074,8 @@ static void ixgbe_scrub_vfta(struct ixgbe_adapter *adapter, u32 vfta_offset)
 	}
 }
 
-static void ixgbe_vlan_promisc_disable(struct ixgbe_adapter *adapter)
+//static
+void ixgbe_vlan_promisc_disable(struct ixgbe_adapter *adapter)
 {
 	struct ixgbe_hw *hw = &adapter->hw;
 	u32 vlnctrl, i;

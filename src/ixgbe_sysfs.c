@@ -212,12 +212,159 @@ err_free:
     return ret ? ret : count;
 }
 
-
 static struct kobj_attribute trunk_attribute =
     __ATTR(trunk, 0644, vfd_trunk_show, vfd_trunk_store);
 
+
+
+/**
+ * vfd_vlan_promisc_show - handler for trunk show function
+ * @kobj:   kobject being called
+ * @attr:   struct kobj_attribute
+ * @buff:   buffer with input data
+ *
+ * Get current data from driver and copy to buffer
+ **/
+static ssize_t vfd_vlan_promisc_show(struct kobject *kobj,
+                  struct kobj_attribute *attr, char *buff)
+{
+    struct pci_dev *pdev;
+    int ret = 0;
+    int vf_id = 0;
+    bool enable = false;
+    if (!vfd_ops || !vfd_ops->get_vlan_promisc)
+        return -EOPNOTSUPP;
+    
+    ret = __get_pdev_and_vfid(kobj, &pdev, &vf_id);
+    if (ret)
+        return ret;
+
+    ret = vfd_ops->get_vlan_promisc(pdev, vf_id, &enable);
+    if (ret)
+        return ret;
+
+    return sprintf(buff, "%s", enable?"enable\n":"disable\n");
+}
+
+
+/**
+ * vfd_trunk_store - handler for trunk store function
+ * @kobj:   kobject being called
+ * @attr:   struct kobj_attribute
+ * @buff:   buffer with input data
+ * @count:  size of buff
+ *
+ * Get current data from driver, compose new data based on input values
+ * depending on "add" or "rem" command, and pass new data to the driver to set.
+ *
+ * On success return count, indicating that we used the whole buffer. On
+ * failure return a negative error condition.
+ **/
+static ssize_t vfd_vlan_promisc_store(struct kobject *kobj,
+                   struct kobj_attribute *attr,
+                   const char *buff, size_t count)
+{
+    struct pci_dev *pdev;
+    int vf_id;
+    int ret = 0;
+
+    if (!vfd_ops || !vfd_ops->set_vlan_promisc)
+        return -EOPNOTSUPP;
+    
+    ret = __get_pdev_and_vfid(kobj, &pdev, &vf_id);
+    if (ret)
+        return ret;
+
+    if(strstr(buff, "enable")) {
+        vfd_ops->set_vlan_promisc(pdev, vf_id, true);
+    } else if (strstr(buff, "disable")) {
+        vfd_ops->set_vlan_promisc(pdev, vf_id, false);
+    } else {
+        return -EINVAL;
+    }
+    return count;
+}
+
+
+
+/**
+ * vfd_vlan_strip_show - handler for vlan stripping show function
+ * @kobj:   kobject being called
+ * @attr:   struct kobj_attribute
+ * @buff:   buffer with input data
+ *
+ * Get current data from driver and copy to buffer
+ **/
+static ssize_t vfd_vlan_strip_show(struct kobject *kobj,
+                  struct kobj_attribute *attr, char *buff)
+{
+    struct pci_dev *pdev;
+    int ret = 0;
+    int vf_id = 0;
+    bool enable = false;
+    if (!vfd_ops || !vfd_ops->get_vlan_strip)
+        return -EOPNOTSUPP;
+    
+    ret = __get_pdev_and_vfid(kobj, &pdev, &vf_id);
+    if (ret)
+        return ret;
+
+    ret = vfd_ops->get_vlan_strip(pdev, vf_id, &enable);
+    if (ret)
+        return ret;
+
+    return sprintf(buff, "%s", enable?"enable\n":"disable\n");
+}
+
+
+/**
+ * vfd_vlan_strip_store - handler for vlan stripping store function
+ * @kobj:   kobject being called
+ * @attr:   struct kobj_attribute
+ * @buff:   buffer with input data
+ * @count:  size of buff
+ *
+ * Get current data from driver, compose new data based on input values
+ * depending on "add" or "rem" command, and pass new data to the driver to set.
+ *
+ * On success return count, indicating that we used the whole buffer. On
+ * failure return a negative error condition.
+ **/
+static ssize_t vfd_vlan_strip_store(struct kobject *kobj,
+                   struct kobj_attribute *attr,
+                   const char *buff, size_t count)
+{
+    struct pci_dev *pdev;
+    int vf_id = 0;
+    int ret = 0;
+
+    if (!vfd_ops || !vfd_ops->set_vlan_strip)
+        return -EOPNOTSUPP;
+    
+    ret = __get_pdev_and_vfid(kobj, &pdev, &vf_id);
+    if (ret)
+        return ret;
+
+    if(strstr(buff, "enable")) {
+        ret = vfd_ops->set_vlan_strip(pdev, vf_id, true);
+    } else if (strstr(buff, "disable")) {
+        ret = vfd_ops->set_vlan_strip(pdev, vf_id, false);
+    } else {
+        return -EINVAL;
+    }
+    return ret ? ret : count;
+}
+
+static struct kobj_attribute vlan_promisc_attribute =
+    __ATTR(vlan_promisc, 0644, vfd_vlan_promisc_show, vfd_vlan_promisc_store);
+
+static struct kobj_attribute vlan_strip_attribute =
+    __ATTR(vlan_strip, 0644, vfd_vlan_strip_show, vfd_vlan_strip_store);
+
 static struct attribute *s_attrs[] = {
     &trunk_attribute.attr,
+    &vlan_strip_attribute.attr,
+    &vlan_promisc_attribute.attr,
     NULL
 };
 

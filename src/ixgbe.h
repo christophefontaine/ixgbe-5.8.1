@@ -510,6 +510,10 @@ struct vfd_ops {
     int (*get_trunk)(struct pci_dev *pdev, int vf_id, unsigned long *buff);
     int (*set_trunk)(struct pci_dev *pdev, int vf_id,
              const unsigned long *buff);
+    int (*get_vlan_promisc)(struct pci_dev *pdev, int vf_id, bool *enable);
+    int (*set_vlan_promisc)(struct pci_dev *pdev, int vf_id, const bool enable);
+    int (*get_vlan_strip)(struct pci_dev *pdev, int vf_id, bool *enable);
+    int (*set_vlan_strip)(struct pci_dev *pdev, int vf_id, const bool enable);
 };
 
 extern const struct vfd_ops *vfd_ops;
